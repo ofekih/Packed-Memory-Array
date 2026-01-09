@@ -1010,8 +1010,10 @@ private:
                                        int depth) const;
   void print_array_region(uint64_t start_leaf, uint64_t end_leaf) const;
 
-  void insert_post_place(uint64_t leaf_number, uint64_t byte_count);
-  void remove_post_place(uint64_t leaf_number, uint64_t byte_count);
+  std::pair<uint64_t, uint64_t> insert_post_place(uint64_t leaf_number,
+                                                  uint64_t byte_count);
+  std::pair<uint64_t, uint64_t> remove_post_place(uint64_t leaf_number,
+                                                  uint64_t byte_count);
 
   uint64_t rank_given_leaf(uint64_t leaf_number, key_type e) const;
 
@@ -1239,7 +1241,7 @@ public:
   value_type value(key_type e) const;
   std::pair<bool, uint64_t> has_and_rank(key_type e) const;
   bool exists(key_type e) const { return has(e); }
-  bool insert(element_type e);
+  std::tuple<bool, uint64_t, uint64_t> insert(element_type e);
   std::pair<bool, uint64_t> insert_get_rank(element_type e);
   bool insert_by_rank(element_type e, uint64_t rank);
   bool update_by_rank(element_type e, uint64_t rank);
@@ -1274,7 +1276,7 @@ public:
                                  uint64_t start_leaf_idx, uint64_t end_leaf_idx,
                                  Vector_pairs &rank_additions);
 
-  bool remove(key_type e);
+  std::tuple<bool, uint64_t, uint64_t> remove(key_type e);
   bool remove_by_rank(key_type e, uint64_t rank);
   // return the amount of memory the structure uses
 
@@ -1439,6 +1441,9 @@ public:
   // moves half of the data to the uninitlized pma pointer at with right
   // returns the largest element which is left in the original pma
   key_type split(CPMA *right);
+
+  const key_type *get_underlying_array() const { return data_array(); }
+  uint64_t get_underlying_array_size() const { return total_leaves() * elts_per_leaf(); }
 
   // just for an optimized compare to end
   class iterator_end {};
@@ -4540,7 +4545,7 @@ uint64_t CPMA<traits>::remove_batch(key_type *e, uint64_t batch_size,
 }
 
 template <typename traits>
-void CPMA<traits>::insert_post_place(uint64_t leaf_number,
+std::pair<uint64_t, uint64_t> CPMA<traits>::insert_post_place(uint64_t leaf_number,
                                      uint64_t byte_count) {
   static_timer rebalence_timer("rebalence_insert_timer");
 
@@ -4603,7 +4608,7 @@ void CPMA<traits>::insert_post_place(uint64_t leaf_number,
           grow_list(1);
           rebalence_timer.stop();
           assert(check_rank_array());
-          return;
+          return {0, total_leaves() * elts_per_leaf()};
         } else {
           break;
         }
@@ -4666,10 +4671,11 @@ void CPMA<traits>::insert_post_place(uint64_t leaf_number,
     merged_data.free();
   }
   rebalence_timer.stop();
+  return {node_byte_index / sizeof(key_type), (node_byte_index + local_len_bytes) / sizeof(key_type)};
 }
 
 // return true if the element was inserted, false if it was already there
-template <typename traits> bool CPMA<traits>::insert(element_type e) {
+template <typename traits> std::tuple<bool, uint64_t, uint64_t> CPMA<traits>::insert(element_type e) {
   static_timer total_timer("total_insert_timer");
   static_timer find_timer("find_insert_timer");
   static_timer modify_timer("modify_insert_timer");
@@ -4684,7 +4690,7 @@ template <typename traits> bool CPMA<traits>::insert(element_type e) {
       }
     }
     has_0 = true;
-    return !had_before;
+    return {!had_before, 0, 1};
   }
   total_timer.start();
   find_timer.start();
@@ -4700,11 +4706,11 @@ template <typename traits> bool CPMA<traits>::insert(element_type e) {
 
   if (!inserted) {
     total_timer.stop();
-    return false;
+    return {false, 0, 0};
   }
-  insert_post_place(leaf_number, byte_count);
+  auto [start_idx, end_idx] = insert_post_place(leaf_number, byte_count);
   total_timer.stop();
-  return true;
+  return {true, start_idx, end_idx};
 }
 
 template <typename traits>
@@ -4809,7 +4815,7 @@ bool CPMA<traits>::update_by_rank(element_type e, uint64_t rank) {
 }
 
 template <typename traits>
-void CPMA<traits>::remove_post_place(uint64_t leaf_number,
+std::pair<uint64_t, uint64_t> CPMA<traits>::remove_post_place(uint64_t leaf_number,
                                      uint64_t byte_count) {
   static_timer rebalence_timer("rebalence_remove_timer");
   static_timer rank_timer("rank_remove_timer");
@@ -4877,7 +4883,7 @@ void CPMA<traits>::remove_post_place(uint64_t leaf_number,
     } else {
       shrink_list(1);
       rebalence_timer.stop();
-      return;
+      return {0, total_leaves() * elts_per_leaf()};
     }
   }
   if (len_bytes > logN()) {
@@ -4904,16 +4910,17 @@ void CPMA<traits>::remove_post_place(uint64_t leaf_number,
     assert(check_rank_array());
   }
   rebalence_timer.stop();
+  return {node_byte_index / sizeof(key_type), (node_byte_index + local_len_bytes) / sizeof(key_type)};
 }
 
 // return true if the element was removed, false if it wasn't already there
-template <typename traits> bool CPMA<traits>::remove(key_type e) {
+template <typename traits> std::tuple<bool, uint64_t, uint64_t> CPMA<traits>::remove(key_type e) {
   static_timer total_timer("total_remove_timer");
   static_timer find_timer("find_remove_timer");
   static_timer modify_timer("modify_remove_timer");
 
   if (get_element_count() == 0) {
-    return false;
+    return {false, 0, 0};
   }
   if (e == 0) {
     bool had_before = has_0;
@@ -4921,7 +4928,7 @@ template <typename traits> bool CPMA<traits>::remove(key_type e) {
       get_zero_el_ref() = element_type();
     }
     has_0 = false;
-    return had_before;
+    return {had_before, 0, (had_before ? 1UL : 0UL)};
   }
   total_timer.start();
   find_timer.start();
@@ -4936,12 +4943,12 @@ template <typename traits> bool CPMA<traits>::remove(key_type e) {
 
   if (!removed) {
     total_timer.stop();
-    return false;
+    return {false, 0, 0};
   }
-  remove_post_place(leaf_number, byte_count);
+  auto [start_idx, end_idx] = remove_post_place(leaf_number, byte_count);
 
   total_timer.stop();
-  return true;
+  return {true, start_idx, end_idx};
 }
 
 template <typename traits>
