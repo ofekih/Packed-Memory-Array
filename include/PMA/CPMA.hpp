@@ -4016,7 +4016,7 @@ uint64_t CPMA<traits>::insert_batch(element_ptr_type e, uint64_t batch_size,
   if (batch_size < 100) {
     uint64_t count = 0;
     for (uint64_t i = 0; i < batch_size; i++) {
-      count += insert(e[i]);
+      count += std::get<0>(insert(e[i]));
     }
     return count;
   }
@@ -4026,7 +4026,7 @@ uint64_t CPMA<traits>::insert_batch(element_ptr_type e, uint64_t batch_size,
     uint64_t count = 0;
     uint64_t end = std::min(batch_size, 1000UL);
     for (uint64_t i = 0; i < end; i++) {
-      count += insert(e[i]);
+      count += std::get<0>(insert(e[i]));
     }
     if (batch_size == end) {
       total_timer.stop();
