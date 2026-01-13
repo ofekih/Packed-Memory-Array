@@ -45,7 +45,7 @@
 #pragma clang diagnostic ignored "-Wshadow-field-in-constructor"
 #pragma clang diagnostic ignored "-Wshadow"
 #pragma clang diagnostic ignored "-Wshorten-64-to-32"
-#pragma clang diagnostic ignored "-Wnontrivial-memcall"
+// #pragma clang diagnostic ignored "-Wnontrivial-memcall"
 
 #if !defined(NO_TLX)
 #pragma clang diagnostic push
