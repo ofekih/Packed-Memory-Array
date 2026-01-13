@@ -599,6 +599,9 @@ private:
 
 public:
   [[nodiscard]] uint64_t N() const { return N(meta_data_index); }
+  [[nodiscard]] uint64_t elts_per_leaf() const {
+    return meta_data[meta_data_index].elts_per_leaf;
+  }
 
 private:
   [[nodiscard]] uint64_t head_array_size() const {
@@ -881,10 +884,6 @@ private:
                   "in either Eytzinger or BNary form");
     return meta_data[meta_data_index].total_leaves_rounded_up;
   }
-  [[nodiscard]] uint64_t elts_per_leaf() const {
-    return meta_data[meta_data_index].elts_per_leaf;
-  }
-
   [[nodiscard]] float lower_density_bound(uint64_t depth) const {
     ASSERT(depth < 10000000,
            "depth shouldn't be higher than log(n) it is %lu\n", depth);
