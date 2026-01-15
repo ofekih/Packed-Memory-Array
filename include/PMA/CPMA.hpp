@@ -91,7 +91,7 @@ class make_pcsr {};
 template <typename l, HeadForm h, uint64_t b = 0, bool density = false,
           bool rank = false, bool fixed_size_ = false,
           uint64_t max_fixed_size_ = 4096, bool parallel_ = true,
-          bool maintain_offsets_ = false,
+          bool maintain_offsets_ = false, bool evenly_spaced_ = false,
           typename value_update_ = overwrite_on_insert<
               typename l::element_ref_type, typename l::element_type>>
 class PMA_traits {
@@ -138,6 +138,7 @@ public:
   static constexpr int leaf_blow_up_factor = (sizeof(key_type) == 3) ? 18 : 16;
   static constexpr uint64_t min_leaf_size = 64;
   static constexpr bool maintain_offsets = maintain_offsets_;
+  static constexpr bool evenly_spaced = evenly_spaced_;
 };
 template <typename T = uint64_t>
 using pma_settings = PMA_traits<uncompressed_leaf<T>, InPlace, 0, false, false>;
@@ -1696,7 +1697,8 @@ template <typename traits> void CPMA<traits>::grow_list(uint64_t times) {
   timer merge_timer("merge_in_double");
   merge_timer.start();
   auto merged_data =
-      leaf::template merge<head_form == InPlace, store_density, parallel>(
+      leaf::template merge<head_form == InPlace, store_density, parallel,
+                           traits::evenly_spaced>(
           get_data_ptr(0), total_leaves(), logN(), 0,
           [this](uint64_t index) -> element_ref_type {
             return index_to_head(index);
@@ -1750,7 +1752,8 @@ template <typename traits> void CPMA<traits>::grow_list(uint64_t times) {
       [&]() {
         merged_data.leaf
             .template split<head_form == InPlace, store_density, support_rank,
-                            parallel, traits::maintain_offsets>(
+                            parallel, traits::maintain_offsets,
+                            traits::evenly_spaced>(
                 total_leaves(), merged_data.size, logN(), get_data_ptr(0), 0,
                 [this](uint64_t index) -> element_ref_type {
                   return index_to_head(index);
@@ -1795,7 +1798,8 @@ template <typename traits> void CPMA<traits>::shrink_list(uint64_t times) {
     return;
   }
   auto merged_data =
-      leaf::template merge<head_form == InPlace, store_density, parallel>(
+      leaf::template merge<head_form == InPlace, store_density, parallel,
+                           traits::evenly_spaced>(
           get_data_ptr(0), total_leaves(), logN(), 0,
           [this](uint64_t index) -> element_ref_type {
             return index_to_head(index);
@@ -1835,7 +1839,8 @@ template <typename traits> void CPMA<traits>::shrink_list(uint64_t times) {
 
   merged_data.leaf
       .template split<head_form == InPlace, store_density, support_rank,
-                      parallel, traits::maintain_offsets>(
+                      parallel, traits::maintain_offsets,
+                      traits::evenly_spaced>(
           total_leaves(), merged_data.size, logN(), get_data_ptr(0), 0,
           [this](uint64_t index) -> element_ref_type {
             return index_to_head(index);
@@ -2448,7 +2453,8 @@ template <typename traits> CPMA<traits>::CPMA(auto &range) {
       }
     }
     leaf.template split<head_form == InPlace, store_density, support_rank,
-                        parallel, traits::maintain_offsets>(
+                        parallel, traits::maintain_offsets,
+                        traits::evenly_spaced>(
         total_leaves(), count_elements_, logN(), get_data_ptr(0), 0,
         [this](uint64_t index) -> element_ref_type {
           return index_to_head(index);
@@ -2873,7 +2879,8 @@ uint64_t CPMA<traits>::remove_batch_internal_small_batch(
         find_containing_leaf_number(*e, start_leaf_idx, end_leaf_idx);
     auto [removed, bytes_used] =
         get_leaf(leaf_number)
-            .template remove<head_form == InPlace, traits::maintain_offsets>(
+            .template remove<head_form == InPlace, traits::maintain_offsets,
+                             traits::evenly_spaced>(
                 *e, offsets_array);
     if (!removed) {
       return 0;
@@ -3077,7 +3084,8 @@ uint64_t CPMA<traits>::remove_batch_internal(key_type *e, uint64_t batch_size,
     // returns pointer to new start in batch, number of (distinct) elements
     // merged in
     auto result = get_leaf(leaf_idx / elts_per_leaf())
-                      .template strip_from_leaf<head_form == InPlace>(
+                      .template strip_from_leaf<head_form == InPlace,
+                                                traits::evenly_spaced>(
                           current_elt_ptr, e + batch_size, next_head);
     assert(get_leaf(leaf_idx / elts_per_leaf()).head_key() < next_head);
     current_elt_ptr = std::get<0>(result);
@@ -3941,7 +3949,8 @@ void CPMA<traits>::redistribute_ranges(
     const std::vector<std::tuple<uint64_t, uint64_t>> &ranges) {
   for (const auto &[start, len] : ranges) {
     auto merged_data =
-        leaf::template merge<head_form == InPlace, store_density, parallel>(
+        leaf::template merge<head_form == InPlace, store_density, parallel,
+                             traits::evenly_spaced>(
             get_data_ptr(start), len / logN(), logN(), start / elts_per_leaf(),
             [this](uint64_t index) -> element_ref_type {
               return index_to_head(index);
@@ -3957,7 +3966,8 @@ void CPMA<traits>::redistribute_ranges(
     // output leaf, dest region
     merged_data.leaf
         .template split<head_form == InPlace, store_density, support_rank,
-                        parallel, traits::maintain_offsets>(
+                        parallel, traits::maintain_offsets,
+                        traits::evenly_spaced>(
             len / logN(), merged_data.size, logN(), get_data_ptr(start),
             start / elts_per_leaf(),
             [this](uint64_t index) -> element_ref_type {
@@ -3977,7 +3987,8 @@ void CPMA<traits>::redistribute_ranges(
     auto len = std::get<1>(item);
 
     auto merged_data =
-        leaf::template merge<head_form == InPlace, store_density, parallel>(
+        leaf::template merge<head_form == InPlace, store_density, parallel,
+                             traits::evenly_spaced>(
             get_data_ptr(start), len / logN(), logN(), start / elts_per_leaf(),
             [this](uint64_t index) -> element_ref_type {
               return index_to_head(index);
@@ -3993,7 +4004,8 @@ void CPMA<traits>::redistribute_ranges(
     // output leaf, dest region
     merged_data.leaf
         .template split<head_form == InPlace, store_density, support_rank,
-                        parallel, traits::maintain_offsets>(
+                        parallel, traits::maintain_offsets,
+                        traits::evenly_spaced>(
             len / logN(), merged_data.size, logN(), get_data_ptr(start),
             start / elts_per_leaf(),
             [this](uint64_t index) -> element_ref_type {
@@ -4616,7 +4628,8 @@ std::pair<uint64_t, uint64_t> CPMA<traits>::insert_post_place(uint64_t leaf_numb
   }
   if (len_bytes > logN()) {
     auto merged_data =
-        leaf::template merge<head_form == InPlace, store_density, parallel>(
+        leaf::template merge<head_form == InPlace, store_density, parallel,
+                             traits::evenly_spaced>(
             get_data_ptr(node_byte_index / sizeof(key_type)),
             local_len_bytes / logN(), logN(), node_byte_index / logN(),
             [this](uint64_t index) -> element_ref_type {
@@ -4626,7 +4639,8 @@ std::pair<uint64_t, uint64_t> CPMA<traits>::insert_post_place(uint64_t leaf_numb
 
     merged_data.leaf
         .template split<head_form == InPlace, store_density, support_rank,
-                        parallel, traits::maintain_offsets>(
+                        parallel, traits::maintain_offsets,
+                        traits::evenly_spaced>(
             local_len_bytes / logN(), merged_data.size, logN(),
             get_data_ptr(node_byte_index / sizeof(key_type)),
             node_byte_index / logN(),
@@ -4699,7 +4713,7 @@ template <typename traits> std::tuple<bool, uint64_t, uint64_t> CPMA<traits>::in
   auto [inserted, byte_count] =
       get_leaf(leaf_number)
           .template insert<head_form == InPlace, value_update,
-                           traits::maintain_offsets>(
+                           traits::maintain_offsets, traits::evenly_spaced>(
               std::move(e), value_update(), offsets_array);
   modify_timer.stop();
 
@@ -4887,7 +4901,8 @@ std::pair<uint64_t, uint64_t> CPMA<traits>::remove_post_place(uint64_t leaf_numb
   }
   if (len_bytes > logN()) {
     auto merged_data =
-        leaf::template merge<head_form == InPlace, store_density, parallel>(
+        leaf::template merge<head_form == InPlace, store_density, parallel,
+                             traits::evenly_spaced>(
             get_data_ptr(node_byte_index / sizeof(key_type)),
             local_len_bytes / logN(), logN(), node_byte_index / logN(),
             [this](uint64_t index) -> element_ref_type {
@@ -4897,7 +4912,8 @@ std::pair<uint64_t, uint64_t> CPMA<traits>::remove_post_place(uint64_t leaf_numb
 
     merged_data.leaf
         .template split<head_form == InPlace, store_density, support_rank,
-                        parallel, traits::maintain_offsets>(
+                        parallel, traits::maintain_offsets,
+                        traits::evenly_spaced>(
             local_len_bytes / logN(), merged_data.size, logN(),
             get_data_ptr(node_byte_index / sizeof(key_type)),
             node_byte_index / logN(),
@@ -5617,7 +5633,8 @@ CPMA<traits>::CPMA([[maybe_unused]] make_pcsr tag, size_t num_nodes) {
                               [&](size_t i) { offsets_array.degrees[i] = 0; });
 
   leaf.template split<head_form == InPlace, store_density, support_rank,
-                      parallel, traits::maintain_offsets>(
+                      parallel, traits::maintain_offsets,
+                      traits::evenly_spaced>(
       total_leaves(), count_elements_, logN(), get_data_ptr(0), 0,
       [this](uint64_t index) -> element_ref_type {
         return index_to_head(index);
@@ -5780,7 +5797,8 @@ CPMA<traits>::CPMA([[maybe_unused]] make_pcsr tag, size_t num_nodes,
   offsets_array.locations[num_nodes] = data_array() + soa_num_spots();
 
   leaf.template split<head_form == InPlace, store_density, support_rank,
-                      parallel, traits::maintain_offsets>(
+                      parallel, traits::maintain_offsets,
+                      traits::evenly_spaced>(
       total_leaves(), count_elements_, logN(), get_data_ptr(0), 0,
       [this](uint64_t index) -> element_ref_type {
         return index_to_head(index);
