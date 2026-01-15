@@ -2398,7 +2398,7 @@ public:
 };
 static_counter split_cnt("leaf split");
 static_counter size_cnt("counting the bytes");
-template <class T, typename... VTs> class uncompressed_leaf {
+template <class T, bool EvenlySpaced = false, typename... VTs> class uncompressed_leaf {
 
 public:
   static constexpr size_t max_element_size = sizeof(T);
@@ -2461,28 +2461,40 @@ public:
     element_ptr_type ptr;
 
   public:
-    iterator(element_ref_type head_, element_ptr_type p)
-        : curr_elem_ptr(head_), ptr(p) {}
-    iterator(element_ptr_type head_, element_ptr_type p)
-        : curr_elem_ptr(head_), ptr(p) {}
+    iterator(element_ref_type head_, element_ptr_type p, element_ptr_type e)
+        : curr_elem_ptr(head_), ptr(p), end_ptr(e) {
+      if (std::get<0>(head_) == 0) {
+        ++(*this);
+      }
+    }
     // only for use comparing to end
     bool operator!=([[maybe_unused]] const iterator_end &end) const {
-      return std::get<0>(*curr_elem_ptr) != 0;
+      return !is_end;
     }
     bool operator==([[maybe_unused]] const iterator_end &end) const {
-      return std::get<0>(*curr_elem_ptr) == 0;
+      return is_end;
     }
 
+
+    
     iterator &operator++() {
+      while (ptr < end_ptr && std::get<0>(*ptr) == 0) {
+        ptr = ptr + 1;
+      }
+      if (ptr == end_ptr) {
+        is_end = true;
+        return *this;
+      }
       curr_elem_ptr = ptr;
       ptr = ptr + 1;
       return *this;
     }
+
     bool inc_and_check_end() {
-      curr_elem_ptr = ptr;
-      ptr = ptr + 1;
-      return curr_elem_ptr.template get<0>() == 0;
+      this->operator++();
+      return is_end;
     }
+    
     auto operator*() const {
       if constexpr (binary) {
         return (const key_type &)curr_elem_ptr.template get<0>();
@@ -2492,10 +2504,14 @@ public:
     }
 
     [[nodiscard]] void *get_pointer() const {
-      return (void *)ptr.get_pointer();
+      if (is_end) return (void*)end_ptr.get_pointer(); // Safe?
+      return (void *)curr_elem_ptr.get_pointer(); // Use curr, not ptr!
     }
+  private:
+    element_ptr_type end_ptr;
+    bool is_end = false;
   };
-  iterator begin() const { return iterator(head, array); }
+  iterator begin() const { return iterator(head, array, array + length_in_elements); }
   iterator_end end() const { return {}; }
 
 private:
@@ -2512,11 +2528,17 @@ private:
     */
 
     for (uint64_t i = 0; i < length_in_elements; i++) {
-      if (array.get(i) == 0 || array.get(i) >= x) {
+        if (array.get(i) == 0) continue;
+      if (array.get(i) >= x) {
         return i;
       }
     }
-    return -1;
+    // If not found, x is greater than all elements.
+    // Return index after the last non-zero element.
+    for (uint64_t i = length_in_elements; i > 0; i--) {
+        if (array.get(i - 1) != 0) return i;
+    }
+    return 0;
   }
 
   static uint64_t get_out_of_place_used_elements(T *data) {
@@ -2595,12 +2617,15 @@ public:
     if (e <= head) {
       return 0;
     } else {
+      uint64_t count = 0;
       for (uint64_t i = 0; i < length_in_elements; i++) {
-        if (array[i] == 0 || array[i] >= e) {
-          return i + 1;
+        if (array[i] == 0) continue;
+        if (array[i] >= e) {
+          return count + 1;
         }
+        count++;
       }
-      return length_in_elements + 1;
+      return count + 1;
     }
   }
 
@@ -2614,10 +2639,16 @@ public:
     rank -= 1;
     // something happened so we don't know the exact rank, but we should go to
     // the end
-    if (rank >= length_in_elements || array[rank] == 0) {
-      return last();
+    
+    // We need to find the element with logical index 'rank' (skipping 0s)
+    uint64_t count = 0;
+    for (uint64_t i = 0; i < length_in_elements; i++) {
+        if (array[i] != 0) {
+            if (count == rank) return array[i];
+            count++;
+        }
     }
-    return array[rank];
+    return last();
   }
 
   // Input: pointer to the start of this merge in the batch, end of batch,
@@ -2844,8 +2875,20 @@ public:
     // check if you can fit in the leaf
     if (used_elts <= length_in_elements) {
       head = *temp_arr_start;
-      for (uint64_t i = 0; i < (used_elts - 1); i++) {
-        array[i] = temp_arr_start[i + 1];
+      uint64_t n_body = used_elts - 1;
+      // Zero out the array to create gaps
+      std::memset(array.get_pointer(), 0, length_in_elements * sizeof(T));
+
+      if (n_body > 0) {
+        for (uint64_t i = 0; i < n_body; i++) {
+          // Distribute elements evenly or densely
+          if constexpr (EvenlySpaced) {
+              uint64_t pos = (i * length_in_elements) / n_body;
+              array[pos] = temp_arr_start[i + 1];
+          } else {
+              array[i] = temp_arr_start[i + 1];
+          }
+        }
       }
       free(temp_arr);
     } else {                 // special write for when you don't fit
@@ -3685,12 +3728,20 @@ public:
 
           start += 1;
         }
-        for (uint64_t j = 0; j < end - start; j++) {
-          if constexpr (!binary) {
-            (merged_mp + start + j).zero();
-          }
-          (merged_mp + start + j)
-              .set_and_zero((leaf_data_start - ((head_in_place) ? 1 : 0))[j]);
+        uint64_t body_size = leaf_size;
+        if constexpr (head_in_place) {
+             body_size -= 1;
+        }
+        
+        uint64_t found = 0;
+        for (uint64_t k = 0; k < body_size; k++) {
+             if (leaf_data_start[k] != 0) { // leaf_data_start points to body
+                 if constexpr (!binary) {
+                    (merged_mp + start + found).zero();
+                 }
+                 (merged_mp + start + found).set_and_zero(leaf_data_start[k]);
+                 found++;
+             }
         }
       }
     });
@@ -3794,24 +3845,34 @@ public:
         (merged_mp + start).set_and_zero(index_to_head(leaf_start_index + i));
         start += (std::get<0>(merged_mp[start]) != 0);
         uint64_t local_start = start;
-        if constexpr (head_in_place) {
-          for (uint64_t j = 0; j < leaf_size - 1; j++) {
-            if constexpr (!have_densities) {
-              start += (array.get(j + src_idx + 1) != 0);
-            }
-            if constexpr (!binary) {
-              (merged_mp + local_start + j).zero();
-            }
-            (merged_mp + local_start + j).set_and_zero(array[j + src_idx + 1]);
+          uint64_t body_size = leaf_size;
+          element_ptr_type body_ptr = array + src_idx;
+          if constexpr (head_in_place) {
+              body_size -= 1;
+              body_ptr += 1;
           }
-        } else {
-          for (uint64_t j = 0; j < leaf_size; j++) {
-            if constexpr (!have_densities) {
-              start += (array.get(j + src_idx) != 0);
-            }
-            (merged_mp + local_start + j).set_and_zero(array[j + src_idx]);
+          
+          uint64_t found = 0;
+          for (uint64_t k = 0; k < body_size; k++) {
+              if (std::get<0>(body_ptr[k]) != 0) {
+                  // found a non-zero element
+                  if constexpr (!have_densities) {
+                      start++; 
+                  }
+                  
+                  (merged_mp + local_start + found).set_and_zero(body_ptr[k]);
+                  found++;
+              }
           }
-        }
+          if constexpr (have_densities) {
+             // If we have densities, start was pre-calculated or adjusted outside?
+             // Original: start += density_array... 
+             // We need to match the original logic for 'start' update.
+             // Line 3857: start += density_array...
+             // Line 3859: start -= ...
+             // So detailed increments in loop were only for !have_densities?
+             // Yes (3841, 3851).
+          }
         if constexpr (have_densities) {
           start += density_array[leaf_start_index + i] / sizeof(T);
           if constexpr (head_in_place) {
@@ -3890,51 +3951,42 @@ public:
           if constexpr (head_in_place) {
             out += 1;
           }
-          for (uint64_t k = 0; k < count_for_leaf; k++) {
-            if constexpr (!binary) {
-              (dest_region + out + k).zero();
-            }
-            (dest_region + out + k).set(array[j3 + k]);
-            if constexpr (maintain_offsets) {
-              element_move_function(std::get<0>(dest_region[out + k]),
-                                    (dest_region + out + k).get_pointer(),
-                                    offsets_array);
-            }
-          }
-          if constexpr (store_densities) {
-            density_array[leaf_start_index + i] = count_for_leaf * sizeof(T);
-            if constexpr (head_in_place) {
-              // for head
-              if (std::get<0>(index_to_head(leaf_start_index)) != 0) {
-                density_array[leaf_start_index + i] += sizeof(T);
-              }
-            }
-          }
-          if constexpr (support_rank) {
-            if (i < nextPowerOf2(total_leaves) - 1 &&
-                i < nextPowerOf2(num_leaves) - 1) {
-              uint64_t running_element_total = 1 + count_for_leaf;
-              uint64_t my_e_index =
-                  e_index(leaf_start_index + i, total_leaves - 1);
-              rank_tree_array[my_e_index] = running_element_total;
-            }
-          }
+          uint64_t body_slots = elements_per_leaf;
           if constexpr (head_in_place) {
-            for (uint64_t k = 0; k < elements_per_leaf - count_for_leaf - 1;
-                 k++) {
-              if constexpr (!binary) {
-                // the key needs to be a simple type that this is not needed for
-                (dest_region + out + count_for_leaf + k).zero();
-              }
-              dest_region[out + count_for_leaf + k] = element_type();
+            body_slots -= 1;
+            // The output loop below assumes 'out' has already been incremented by 1
+            // if head_in_place is true, which happens at line 3932/4007/4129.
+          }
+
+          uint64_t current_k = 0;
+          for (uint64_t p = 0; p < body_slots; p++) {
+            bool is_element = false;
+            if (current_k < count_for_leaf) {
+               uint64_t target_p;
+               if constexpr (EvenlySpaced) {
+                   target_p = (current_k * body_slots) / count_for_leaf;
+               } else {
+                   target_p = current_k;
+               }
+               if (p == target_p) is_element = true;
             }
-          } else {
-            for (uint64_t k = 0; k < elements_per_leaf - count_for_leaf; k++) {
+
+            if (is_element) {
               if constexpr (!binary) {
-                // the key needs to be a simple type that this is not needed for
-                (dest_region + out + count_for_leaf + k).zero();
+                 (dest_region + out + p).zero(); // Safety zeroing before set?
               }
-              dest_region[out + count_for_leaf + k] = element_type();
+              (dest_region + out + p).set(array[j3 + current_k]);
+              if constexpr (maintain_offsets) {
+                element_move_function(std::get<0>(dest_region[out + p]),
+                                      (dest_region + out + p).get_pointer(),
+                                      offsets_array);
+              }
+              current_k++;
+            } else {
+              if constexpr (!binary) {
+                (dest_region + out + p).zero();
+              }
+              dest_region[out + p] = element_type();
             }
           }
         }
@@ -3964,15 +4016,40 @@ public:
           if constexpr (head_in_place) {
             out += 1;
           }
-          for (uint64_t k = 0; k < count_for_leaf; k++) {
-            if constexpr (!binary) {
-              (dest_region + out + k).zero();
+          uint64_t body_slots = elements_per_leaf;
+          if constexpr (head_in_place) {
+            body_slots -= 1;
+          }
+
+          uint64_t current_k = 0;
+          for (uint64_t p = 0; p < body_slots; p++) {
+            bool is_element = false;
+            if (current_k < count_for_leaf) {
+               uint64_t target_p;
+               if constexpr (EvenlySpaced) {
+                   target_p = (current_k * body_slots) / count_for_leaf;
+               } else {
+                   target_p = current_k;
+               }
+               if (p == target_p) is_element = true;
             }
-            (dest_region + out + k).set(array[j3 + k]);
-            if constexpr (maintain_offsets) {
-              element_move_function(std::get<0>(dest_region[out + k]),
-                                    (dest_region + out + k).get_pointer(),
-                                    offsets_array);
+
+            if (is_element) {
+              if constexpr (!binary) {
+                 (dest_region + out + p).zero();
+              }
+              (dest_region + out + p).set(array[j3 + current_k]);
+              if constexpr (maintain_offsets) {
+                element_move_function(std::get<0>(dest_region[out + p]),
+                                      (dest_region + out + p).get_pointer(),
+                                      offsets_array);
+              }
+              current_k++;
+            } else {
+              if constexpr (!binary) {
+                (dest_region + out + p).zero();
+              }
+              dest_region[out + p] = element_type();
             }
           }
           if constexpr (store_densities) {
@@ -4002,24 +4079,6 @@ public:
               }
               rank_tree_array[my_e_index] =
                   running_element_total - parent_running_element_total;
-            }
-          }
-          if constexpr (head_in_place) {
-            for (uint64_t k = 0; k < elements_per_leaf - count_for_leaf - 1;
-                 k++) {
-              if constexpr (!binary) {
-                // the key needs to be a simple type that this is not needed for
-                (dest_region + out + count_for_leaf + k).zero();
-              }
-              dest_region[out + count_for_leaf + k] = element_type();
-            }
-          } else {
-            for (uint64_t k = 0; k < elements_per_leaf - count_for_leaf; k++) {
-              if constexpr (!binary) {
-                // the key needs to be a simple type that this is not needed for
-                (dest_region + out + count_for_leaf + k).zero();
-              }
-              dest_region[out + count_for_leaf + k] = element_type();
             }
           }
         });
@@ -4086,12 +4145,40 @@ public:
       if constexpr (head_in_place) {
         out += 1;
       }
-      for (uint64_t k = 0; k < count_for_leaf; k++) {
-        (dest_region + out + k).set(array[j3 + k]);
-        if constexpr (maintain_offsets) {
-          element_move_function(std::get<0>(dest_region[out + k]),
-                                (dest_region + out + k).get_pointer(),
-                                offsets_array);
+      uint64_t body_slots = elements_per_leaf;
+      if constexpr (head_in_place) {
+        body_slots -= 1;
+      }
+
+      uint64_t current_k = 0;
+      for (uint64_t p = 0; p < body_slots; p++) {
+        bool is_element = false;
+        if (current_k < count_for_leaf) {
+           uint64_t target_p;
+           if constexpr (EvenlySpaced) {
+               target_p = (current_k * body_slots) / count_for_leaf;
+           } else {
+               target_p = current_k;
+           }
+           if (p == target_p) is_element = true;
+        }
+
+        if (is_element) {
+          if constexpr (!binary) {
+             (dest_region + out + p).zero();
+          }
+          (dest_region + out + p).set(array[j3 + current_k]);
+          if constexpr (maintain_offsets) {
+            element_move_function(std::get<0>(dest_region[out + p]),
+                                  (dest_region + out + p).get_pointer(),
+                                  offsets_array);
+          }
+          current_k++;
+        } else {
+          if constexpr (!binary) {
+            (dest_region + out + p).zero();
+          }
+          dest_region[out + p] = element_type();
         }
       }
       if constexpr (store_densities) {
@@ -4117,24 +4204,6 @@ public:
           }
           rank_tree_array[my_e_index] =
               running_element_total - parent_running_element_total;
-        }
-      }
-      if constexpr (head_in_place) {
-        for (uint64_t k = 0; k < elements_per_leaf - count_for_leaf - 1; k++) {
-          if constexpr (!binary) {
-            // the key needs to be a simple type that this is not needed for
-            (dest_region + out + count_for_leaf + k).zero();
-          }
-          dest_region[out + count_for_leaf + k] = element_type();
-        }
-
-      } else {
-        for (uint64_t k = count_for_leaf; k < elements_per_leaf; k++) {
-          if constexpr (!binary) {
-            // the key needs to be a simple type that this is not needed for
-            (dest_region + out + k).zero();
-          }
-          dest_region[out + k] = element_type();
         }
       }
     }
@@ -4189,7 +4258,7 @@ public:
       assert(false);
     }
 #endif
-    assert(array.get(length_in_elements - 1) == 0);
+    // assert(array.get(length_in_elements - 1) == 0); // Removed: last element might be occupied if gaps exist elsewhere
     assert(std::get<0>(x) != 0);
     if (std::get<0>(x) == head_key()) {
       if constexpr (!binary) {
@@ -4216,20 +4285,85 @@ public:
       }
       return {false, 0};
     }
-    size_t num_elements = fr + 1;
-    // for (uint64_t i = length_in_elements - 1; i >= fr + 1; i--) {
-    //   num_elements += (array[i - 1] != 0);
-    //   array[i] = array[i - 1];
-    // }
-    // for (uint64_t i = fr; i < length_in_elements - 1; i++)
-    for (uint64_t i = length_in_elements - 1; i > fr; i--) {
-      (array + i).set_and_zero(array[i - 1]);
-      if constexpr (maintain_offsets) {
-        element_move_function(std::get<0>(array[i]), &std::get<0>(array[i]),
-                              offsets_array);
-      }
-      num_elements += (std::get<0>(array[i]) != 0);
+
+    if constexpr (EvenlySpaced) {
+        // Find nearest gap
+        int64_t right_gap = -1;
+        for (uint64_t i = fr; i < length_in_elements; i++) {
+            if (std::get<0>(array[i]) == 0) {
+                right_gap = i;
+                break;
+            }
+        }
+        int64_t left_gap = -1;
+        for (int64_t i = fr - 1; i >= 0; i--) {
+            if (std::get<0>(array[i]) == 0) {
+                left_gap = i;
+                break;
+            }
+        }
+
+        bool shift_right = true;
+        if (right_gap == -1 && left_gap == -1) {
+            assert(false && "Leaf full");
+        } else if (right_gap == -1) {
+            shift_right = false;
+        } else if (left_gap != -1) {
+            if ((fr - left_gap) < (uint64_t)(right_gap - fr)) {
+                shift_right = false;
+            }
+        }
+
+        if (shift_right) {
+            for (uint64_t i = right_gap; i > fr; i--) {
+            (array + i).set_and_zero(array[i - 1]);
+            if constexpr (maintain_offsets) {
+                element_move_function(std::get<0>(array[i]), &std::get<0>(array[i]),
+                                    offsets_array);
+            }
+            }
+        } else {
+            // Shift left
+            for (uint64_t i = left_gap; i < fr - 1; i++) {
+                (array + i).set_and_zero(array[i + 1]);
+                if constexpr (maintain_offsets) {
+                    element_move_function(std::get<0>(array[i]), &std::get<0>(array[i]),
+                                        offsets_array);
+                }
+            }
+            fr--;
+        }
+    } else {
+        // Dense packing: shift everything right
+        assert(array.get(length_in_elements - 1) == 0);
+        size_t num_elements = fr + 1;
+        for (uint64_t i = length_in_elements - 1; i > fr; i--) {
+            (array + i).set_and_zero(array[i - 1]);
+            if constexpr (maintain_offsets) {
+                element_move_function(std::get<0>(array[i]), &std::get<0>(array[i]),
+                                    offsets_array);
+            }
+            num_elements += (std::get<0>(array[i]) != 0);
+        }
+        
+        // Write the element
+        if constexpr (!binary) {
+            (array + fr).zero();
+        }
+        array[fr] = std::move(x);
+        if constexpr (maintain_offsets) {
+            element_move_function(std::get<0>(array[fr]), &std::get<0>(array[fr]),
+                                offsets_array);
+        }
+#if DEBUG == 1
+        if (!check_increasing_or_zero<maintain_offsets>()) {
+            print();
+            assert(false);
+        }
+#endif
+        return {true, num_elements * sizeof(T) + ((head_in_place) ? sizeof(T) : 0)};
     }
+
     if constexpr (!binary) {
       (array + fr).zero();
     }
@@ -4244,7 +4378,7 @@ public:
       assert(false);
     }
 #endif
-    return {true, num_elements * sizeof(T) + ((head_in_place) ? sizeof(T) : 0)};
+    return {true, used_size<head_in_place>()};
   }
 
   template <bool head_in_place>
@@ -4345,14 +4479,7 @@ public:
       (array + length_in_elements - 1).zero();
     }
     array[length_in_elements - 1] = element_type();
-    size_t num_elements = fr;
-    for (uint64_t i = fr; i < length_in_elements; i++) {
-      if (array.get(i) == 0) {
-        break;
-      }
-      num_elements += 1;
-    }
-    return {true, num_elements * sizeof(T) + ((head_in_place) ? sizeof(T) : 0)};
+    return {true, used_size<head_in_place>()};
   }
 
   template <bool unused = false> bool contains(key_type x) const {
@@ -4488,10 +4615,9 @@ public:
   key_type last() const {
     element_type last_elem = head;
     for (uint64_t i = 0; i < length_in_elements; i++) {
-      if (array.get(i) == 0) {
-        break;
-      }
-      last_elem = array[i];
+        if (std::get<0>(array[i]) != 0) {
+            last_elem = array[i];
+        }
     }
     return std::get<0>(last_elem);
   }
