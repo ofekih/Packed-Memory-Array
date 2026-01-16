@@ -1111,6 +1111,7 @@ public:
         allocated_size += 32 - (allocated_size % 32);
       }
       underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
       ParallelTools::parallel_for(
           0, other.underlying_array_size(), [&](size_t i) {
             underlying_array_char()[i] = other.underlying_array_char()[i];
@@ -1177,6 +1178,7 @@ public:
         allocated_size += 32 - (allocated_size % 32);
       }
       underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
       ParallelTools::parallel_for(
           0, other.underlying_array_size(), [&](size_t i) {
             underlying_array_char()[i] = other.underlying_array_char()[i];
@@ -1728,6 +1730,7 @@ template <typename traits> void CPMA<traits>::grow_list(uint64_t times) {
       allocated_size += 32 - (allocated_size % 32);
     }
     underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
   }
   if constexpr (!binary) {
     get_zero_el_ptr().set_and_zero(zero_element);
@@ -1817,6 +1820,7 @@ template <typename traits> void CPMA<traits>::shrink_list(uint64_t times) {
       allocated_size += 32 - (allocated_size % 32);
     }
     underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
   }
   if constexpr (!binary) {
     get_zero_el_ref() = zero_element;
@@ -2343,6 +2347,7 @@ template <typename traits> CPMA<traits>::CPMA() {
       allocated_size += 32 - (allocated_size % 32);
     }
     underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
   }
 
   std::fill((uint8_t *)underlying_array,
@@ -2357,6 +2362,7 @@ template <typename traits> CPMA<traits>::CPMA(key_type *start, key_type *end) {
       allocated_size += 32 - (allocated_size % 32);
     }
     underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
   }
   std::fill((uint8_t *)underlying_array,
             (uint8_t *)underlying_array + underlying_array_size(), 0);
@@ -2373,6 +2379,7 @@ template <typename traits> CPMA<traits>::CPMA(auto &range) {
         allocated_size += 32 - (allocated_size % 32);
       }
       underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
     }
     std::fill((uint8_t *)underlying_array,
               (uint8_t *)underlying_array + underlying_array_size(), 0);
@@ -2438,6 +2445,7 @@ template <typename traits> CPMA<traits>::CPMA(auto &range) {
       allocated_size += 32 - (allocated_size % 32);
     }
     underlying_array = aligned_alloc(32, allocated_size);
+    memset(underlying_array, 0, allocated_size);
     if constexpr (head_form != InPlace) {
       ParallelTools::parallel_for(0, (head_array_size() / sizeof(key_type)),
                                   [&](size_t i) { head_array()[i] = 0; });
@@ -5601,6 +5609,7 @@ CPMA<traits>::CPMA([[maybe_unused]] make_pcsr tag, size_t num_nodes) {
     allocated_size += 32 - (allocated_size % 32);
   }
   underlying_array = aligned_alloc(32, allocated_size);
+  memset(underlying_array, 0, allocated_size);
 
   if constexpr (head_form != InPlace) {
     ParallelTools::parallel_for(0, (head_array_size() / sizeof(key_type)),
@@ -5769,6 +5778,7 @@ CPMA<traits>::CPMA([[maybe_unused]] make_pcsr tag, size_t num_nodes,
     allocated_size += 32 - (allocated_size % 32);
   }
   underlying_array = aligned_alloc(32, allocated_size);
+  memset(underlying_array, 0, allocated_size);
 
   if constexpr (head_form != InPlace) {
     ParallelTools::parallel_for(0, (head_array_size() / sizeof(key_type)),
